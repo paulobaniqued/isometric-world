@@ -157,6 +157,138 @@ public static class LShapeCameraSetup
         RenderViewpointsBatch();
     }
 
+    /// <summary>Wire Q/W/E/R to four exact camera world transforms supplied by the user
+    /// (positions + rotation quaternions), fitting each zoom to the building it aims at.</summary>
+    public static void ApplyCustomViewpointsBatch()
+    {
+        var scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+
+        var poses = new (Vector3 pos, Quaternion rot)[]
+        {
+            (new Vector3(-143.60001f, 129.2f,  -47.3f),  new Quaternion(0.27984515f, 0.36470562f, -0.11591567f, 0.8804772f)),
+            (new Vector3(-136.7f,     123.3f, -119.8f),  new Quaternion(0.27984515f, 0.36470562f, -0.11591567f, 0.8804772f)),
+            (new Vector3(-123.4f,     102.9f, -125.0f),  new Quaternion(0.25422218f, 0.51814574f, -0.16468409f, 0.79985958f)),
+            (new Vector3(-75.6f,      144.3f, -145.6f),  new Quaternion(0.26769456f, 0.44594717f, -0.14173695f, 0.84224784f)),
+        };
+        int n = poses.Length;
+
+        var all = new List<Transform>();
+        foreach (var root in scene.GetRootGameObjects())
+            all.AddRange(root.GetComponentsInChildren<Transform>(true));
+        var roomBounds = new List<(string name, Bounds b)>();
+        foreach (var name in RoomGroups)
+        {
+            var g = all.FirstOrDefault(t => t.name == name);
+            if (g != null && TryGetBounds(g, out var b)) roomBounds.Add((name, b));
+        }
+
+        var positions = new Vector3[n];
+        var rotations = new Quaternion[n];
+        var eulers = new Vector3[n];
+        var halfH = new float[n];
+        var halfW = new float[n];
+
+        for (int i = 0; i < n; i++)
+        {
+            Quaternion rot = poses[i].rot.normalized;
+            Vector3 camPos = poses[i].pos;
+            Vector3 fwd = rot * Vector3.forward, right = rot * Vector3.right, up = rot * Vector3.up;
+
+            // pick the room this pose is aimed at (nearest to the forward ray, in front)
+            string matched = "(fallback)";
+            Bounds tb = default;
+            float best = float.MaxValue;
+            foreach (var (rname, rb) in roomBounds)
+            {
+                Vector3 v = rb.center - camPos;
+                float fd = Vector3.Dot(v, fwd);
+                if (fd <= 0.01f) continue;
+                float perp = (v - fd * fwd).magnitude;
+                if (perp < best) { best = perp; matched = rname; tb = rb; }
+            }
+
+            float hr = 7f, hu = 7f;
+            if (best < float.MaxValue)
+            {
+                hr = 0; hu = 0;
+                foreach (var c in Corners(tb))
+                {
+                    Vector3 d = c - tb.center;
+                    hr = Mathf.Max(hr, Mathf.Abs(Vector3.Dot(d, right)));
+                    hu = Mathf.Max(hu, Mathf.Abs(Vector3.Dot(d, up)));
+                }
+            }
+
+            positions[i] = camPos;
+            rotations[i] = rot;
+            eulers[i] = rot.eulerAngles;
+            halfW[i] = hr;
+            halfH[i] = hu;
+            Debug.Log($"[LShapeCameraSetup] Viewpoint {i + 1} aims at {matched}; halfW={hr:F2} halfH={hu:F2}");
+        }
+
+        var go = GameObject.Find("GlobalIsoCamera");
+        if (go == null) go = new GameObject("GlobalIsoCamera");
+        go.tag = "MainCamera";
+        var cam = go.GetComponent<Camera>();
+        if (cam == null) cam = go.AddComponent<Camera>();
+        cam.orthographic = true;
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = Hex("#E7EBF2");
+        cam.nearClipPlane = 0.3f;
+        cam.farClipPlane = 3000f;
+        cam.cullingMask = ~0;
+        if (go.GetComponent<UniversalAdditionalCameraData>() == null)
+            go.AddComponent<UniversalAdditionalCameraData>().renderPostProcessing = true;
+        if (go.GetComponent<AudioListener>() == null)
+            go.AddComponent<AudioListener>();
+
+        var dir = go.GetComponent<IsoCameraDirector>();
+        if (dir == null) dir = go.AddComponent<IsoCameraDirector>();
+        dir.viewpoints = null;                 // force baked mode
+        dir.orthoSizes = null;
+        dir.positions = positions;
+        dir.rotations = rotations;
+        dir.eulerAngles = eulers;
+        dir.halfHeights = halfH;
+        dir.halfWidths = halfW;
+        dir.padding = Padding;
+        dir.transitionDuration = 0.6f;
+        dir.startIndex = 0;
+
+        go.transform.SetPositionAndRotation(positions[0], rotations[0]);
+        cam.aspect = VerifyAspect;
+        cam.orthographicSize = Mathf.Max(halfH[0], halfW[0] / VerifyAspect) * Padding;
+
+        EditorSceneManager.MarkSceneDirty(scene);
+        EditorSceneManager.SaveScene(scene);
+        Debug.Log("[LShapeCameraSetup] Applied 4 custom world-transform viewpoints (Q/W/E/R).");
+
+        string outDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Screenshots");
+        Directory.CreateDirectory(outDir);
+        for (int i = 0; i < n; i++)
+        {
+            cam.transform.SetPositionAndRotation(positions[i], rotations[i]);
+            cam.aspect = VerifyAspect;
+            cam.orthographicSize = Mathf.Max(halfH[i], halfW[i] / VerifyAspect) * Padding;
+            const int w = 1280, h = 720;
+            var rt = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32);
+            var req = new RenderPipeline.StandardRequest();
+            if (RenderPipeline.SupportsRenderRequest(cam, req)) { req.destination = rt; RenderPipeline.SubmitRenderRequest(cam, req); }
+            else { cam.targetTexture = rt; cam.Render(); cam.targetTexture = null; }
+            RenderTexture.active = rt;
+            var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+            tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+            tex.Apply();
+            RenderTexture.active = null;
+            File.WriteAllBytes(Path.Combine(outDir, $"iso_lshape_custom{i + 1}.png"), tex.EncodeToPNG());
+            Object.DestroyImmediate(tex);
+            rt.Release();
+            Object.DestroyImmediate(rt);
+        }
+        Debug.Log("[LShapeCameraSetup] Rendered 4 custom viewpoint stops.");
+    }
+
     // ---- helpers ----
 
     static bool TryGetBounds(Transform group, out Bounds bounds)

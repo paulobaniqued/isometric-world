@@ -28,8 +28,11 @@ public class IsoCameraDirector : MonoBehaviour
     [Tooltip("Camera world position for each viewpoint.")]
     public Vector3[] positions = new Vector3[4];
 
-    [Tooltip("Camera euler rotation for each viewpoint.")]
+    [Tooltip("Camera euler rotation for each viewpoint (fallback if 'rotations' is empty).")]
     public Vector3[] eulerAngles = new Vector3[4];
+
+    [Tooltip("Exact camera rotation per viewpoint; used instead of eulerAngles when set.")]
+    public Quaternion[] rotations;
 
     [Tooltip("Target world half-height (screen-up extent) per viewpoint.")]
     public float[] halfHeights = new float[4];
@@ -127,7 +130,7 @@ public class IsoCameraDirector : MonoBehaviour
 
         if (positions == null || i < 0 || i >= Count) return false;
         pos = positions[i];
-        rot = Quaternion.Euler(eulerAngles[i]);
+        rot = (rotations != null && i < rotations.Length) ? rotations[i] : Quaternion.Euler(eulerAngles[i]);
         size = SizeFor(i);
         return true;
     }
