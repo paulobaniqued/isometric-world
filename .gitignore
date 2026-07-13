@@ -105,3 +105,12 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+# --- Project-local additions ---
+# Accidental artifact from a tool redirecting to /dev/null on Windows
+/dev/
+# Python bytecode cache from the Blender pipeline scripts
+__pycache__/
+*.pyc
+# Regenerable Blender asset preview renders (rebuild via BlenderPipeline/gen_*.py)
+/BlenderPipeline/previews/
